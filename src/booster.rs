@@ -8,6 +8,9 @@ use lightgbm_sys;
 
 use crate::{Dataset, Error, Result};
 
+pub const PREDICT_TYPE_NORMAL: i32 = lightgbm_sys::C_API_PREDICT_NORMAL as i32;
+pub const PREDICT_TYPE_LEAF_INDEX: i32 = lightgbm_sys::C_API_PREDICT_LEAF_INDEX as i32;
+
 
 fn load_pandas_categorical(model_string: &str) -> Option<Vec<Vec<Value>>> {
     let pandas_key = "pandas_categorical:";
@@ -136,13 +139,12 @@ impl Booster {
     /// ```
     /// let output = vec![vec![1.0, 0.109, 0.433]];
     /// ```
-    pub fn predict(&self, data: Vec<Vec<f64>>, predict_type: Option<i32>) -> Result<Vec<Vec<f64>>> {
+    pub fn predict(&self, data: Vec<Vec<f64>>, predict_type: i32) -> Result<Vec<Vec<f64>>> {
         let data_length = data.len();
         let feature_length = data[0].len();
         let params = CString::new("").unwrap();
         let mut out_length: c_longlong = 0;
         let flat_data = data.into_iter().flatten().collect::<Vec<_>>();
-        let predict_type = predict_type.unwrap_or(0_i32);
 
         // get num_class
         let mut num_class = 0;
@@ -291,7 +293,7 @@ mod tests {
         };
         let bst = _train_booster(&params);
         let feature = vec![vec![0.5; 28], vec![0.0; 28], vec![0.9; 28]];
-        let result = bst.predict(feature, None).unwrap();
+        let result = bst.predict(feature, PREDICT_TYPE_NORMAL).unwrap();
         let mut normalized_result = Vec::new();
         for r in &result[0] {
             normalized_result.push(if r > &0.5 { 1 } else { 0 });
