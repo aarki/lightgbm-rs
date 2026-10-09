@@ -1,6 +1,6 @@
 use libc::{c_char, c_double, c_longlong, c_void};
 use std;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 
 use serde_json::Value;
 
@@ -194,52 +194,41 @@ impl Booster {
     }
 
     /// Get Feature Names.
+    ///
+    /// LightGBM writes each name into a caller-owned buffer. The buffers are plain byte vectors
+    /// so they are always freed with the size they were allocated with: rebuilding them with
+    /// `CString::from_raw` after C shortened the string freed them with the wrong size, which
+    /// corrupts allocators that use sized deallocation (jemalloc's sdallocx).
     pub fn feature_name(&self) -> Result<Vec<String>> {
-        let num_feature = self.num_feature()?;
-        let mut tmp_out_len = 0;
-        let reserved_string_buffer_size = 255;
-        let mut required_string_buffer_size = 0;
-        let out_strs = (0..num_feature)
-            .map(|_| {
-                CString::new(" ".repeat(reserved_string_buffer_size))
-                    .unwrap()
-                    .into_raw() as *mut c_char
-            })
-            .collect::<Vec<_>>();
-        lgbm_call!(lightgbm_sys::LGBM_BoosterGetFeatureNames(
-            self.handle,
-            num_feature as i32,
-            &mut tmp_out_len,
-            reserved_string_buffer_size,
-            &mut required_string_buffer_size,
-            out_strs.as_ptr() as *mut *mut c_char
-        ))?;
-        let actual_string_buffer_size = required_string_buffer_size.clone();
-        let out_strs = if actual_string_buffer_size > reserved_string_buffer_size {
-                (0..num_feature)
-                .map(|_| {
-                    CString::new(" ".repeat(actual_string_buffer_size))
-                        .unwrap()
-                        .into_raw() as *mut c_char
-                })
-                .collect::<Vec<_>>()}  else {out_strs};
-        if actual_string_buffer_size > reserved_string_buffer_size {
-                lgbm_call!(lightgbm_sys::LGBM_BoosterGetFeatureNames(
-                    self.handle,
-                    num_feature as i32,
-                    &mut tmp_out_len,
-                    actual_string_buffer_size,
-                    &mut required_string_buffer_size,
-                    out_strs.as_ptr() as *mut *mut c_char
-                ))?;
-        };
-        let output: Vec<String> = out_strs
-            .into_iter()
-            .map(|s| unsafe { CString::from_raw(s).into_string().unwrap() })
-            .collect();
-        Ok(output)
+        let num_feature = self.num_feature()? as usize;
+        let mut buffer_len = 256usize;
+        loop {
+            let mut buffers: Vec<Vec<u8>> = (0..num_feature).map(|_| vec![0u8; buffer_len]).collect();
+            let mut pointers: Vec<*mut c_char> = buffers
+                .iter_mut()
+                .map(|b| b.as_mut_ptr() as *mut c_char)
+                .collect();
+            let mut out_len = 0;
+            let mut required_len = 0;
+            lgbm_call!(lightgbm_sys::LGBM_BoosterGetFeatureNames(
+                self.handle,
+                num_feature as i32,
+                &mut out_len,
+                buffer_len,
+                &mut required_len,
+                pointers.as_mut_ptr()
+            ))?;
+            if required_len <= buffer_len {
+                return Ok(buffers
+                    .iter()
+                    .map(|b| CStr::from_bytes_until_nul(b).unwrap().to_string_lossy().into_owned())
+                    .collect());
+            }
+            // A name did not fit: retry with the length LightGBM reported.
+            buffer_len = required_len;
+        }
     }
-
+    
     // Get Feature Importance
     pub fn feature_importance(&self) -> Result<Vec<f64>> {
         let num_feature = self.num_feature()?;
